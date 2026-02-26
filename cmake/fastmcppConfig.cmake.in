@@ -1,0 +1,16 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(nlohmann_json 3.11)
+find_dependency(httplib 0.15)
+find_dependency(OpenSSL)
+
+# Curl handled similarly if not statically baked in
+if(@FASTMCPP_ENABLE_POST_STREAMING@ OR @FASTMCPP_ENABLE_SAMPLING_HTTP_HANDLERS@)
+    find_dependency(CURL)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/fastmcppTargets.cmake")
+
+check_set_and_check(fastmcpp_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")

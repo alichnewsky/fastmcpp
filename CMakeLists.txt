@@ -1,9 +1,12 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 # CMP0169: Allow FetchContent_Populate() for deps without CMakeLists.txt
 if(POLICY CMP0169)
   cmake_policy(SET CMP0169 OLD)
 endif()
 project(fastmcpp VERSION 2.14.1 LANGUAGES CXX)
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +18,11 @@ option(FASTMCPP_ENABLE_POST_STREAMING "Enable POST streaming via libcurl (option
 option(FASTMCPP_FETCH_CURL "Fetch and build libcurl statically for POST streaming" ON)
 option(FASTMCPP_ENABLE_SAMPLING_HTTP_HANDLERS "Enable built-in OpenAI/Anthropic sampling handlers (requires libcurl)" OFF)
 
-add_library(fastmcpp_core STATIC
+# force position independent code for static libraries as well ??
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+add_library(
+    fastmcpp_core    
     src/types.cpp
     src/util/schema_build.cpp
     src/app.cpp
@@ -58,9 +65,18 @@ add_library(fastmcpp_core STATIC
     src/util/json_schema_type.cpp
     src/settings.cpp
 )
+
+# handle symbol visibility (both on windows and linux?)
+set_target_properties(fastmcpp_core PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+)
+
 target_include_directories(fastmcpp_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 # Version header is public
@@ -78,24 +94,59 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
       nlohmann_json
       GIT_REPOSITORY https://github.com/nlohmann/json.git
       GIT_TAG v3.11.3
+      # attempt find_package first, before download.
+      FIND_PACKAGE_ARGS 3.11
     )
+    # if find_package fails, download and shove it into ${CMAKE_BINARY_DIR}/_deps
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
+get_target_property(is_json_imported nlohmann_json::nlohmann_json IMPORTED)
 
-target_link_libraries(fastmcpp_core PUBLIC nlohmann_json::nlohmann_json)
+set(MAYBE_JSON_TARGET "")
+if(NOT is_json_imported)
+  # target is local via fetch content, must be added to export set !
+  set(MAYBE_JSON_TARGET nlohmann_json)
+
+  # docs/tests install for fastmcpp does not mean docs/tests install for nlohmann_json
+  set(JSON_Install ON CACHE INTERNAL "")
+endif()
+
+set(CPPHTTPLIB_OPENSSL_SUPPORT ON CACHE BOOL "" FORCE)
+find_package(OpenSSL REQUIRED)
+target_compile_definitions(fastmcpp_core PUBLIC CPPHTTPLIB_OPENSSL_SUPPORT)
 
 # Header-only HTTP library (cpp-httplib)
-include(FetchContent)
-FetchContent_Declare(
-  cpp_httplib
-  GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-  GIT_TAG v0.15.3
-)
-FetchContent_GetProperties(cpp_httplib)
-if(NOT cpp_httplib_POPULATED)
-  FetchContent_Populate(cpp_httplib)
+if (NOT TARGET httplib::httplib)
+  include(FetchContent)
+  FetchContent_Declare(
+    cpp_httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    # this is a pretty old one, and its cmake list has gone a long way
+    GIT_TAG v0.15.3
+    FIND_PACKAGE_ARGS 0.15
+  )
+  FetchContent_MakeAvailable(cpp_httplib)
 endif()
-target_include_directories(fastmcpp_core PUBLIC ${cpp_httplib_SOURCE_DIR})
+
+get_target_property(is_cpp_httplib_imported httplib::httplib IMPORTED)
+
+set(MAYBE_HTTPLIB_TARGET "")
+if(NOT is_cpp_httplib_imported)
+  # target is local via fetch content, must be added to export set !
+  set(MAYBE_HTTPLIB_TARGET httplib)
+
+  # docs/tests install for fastmcpp does not mean docs/tests install for httplib ?
+  #set(JSON_Install ON CACHE INTERNAL "")
+endif()
+
+target_link_libraries(fastmcpp_core
+        PUBLIC
+        nlohmann_json::nlohmann_json
+        httplib::httplib
+        #cpp-httplib::cpp-httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+)
 
 # Optional: libcurl for POST streaming and sampling handlers (modular)
 if(FASTMCPP_ENABLE_POST_STREAMING OR FASTMCPP_ENABLE_SAMPLING_HTTP_HANDLERS)
@@ -176,6 +227,35 @@ target_link_libraries(fastmcpp_core PRIVATE Threads::Threads)
 
 add_executable(fastmcpp src/cli/main.cpp)
 target_link_libraries(fastmcpp PRIVATE fastmcpp_core)
+# --- Install Logic ---
+
+install(TARGETS fastmcpp_core ${MAYBE_JSON_TARGET} ${MAYBE_HTTPLIB_TARGRET}
+    EXPORT fastmcppTargets 
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# Create the Config file for find_package()
+install(EXPORT fastmcppTargets
+    FILE fastmcppTargets.cmake
+    NAMESPACE fastmcpp::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fastmcpp
+)
+
+configure_package_config_file(
+    cmake/fastmcppConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/fastmcppConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fastmcpp
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/fastmcppConfig.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fastmcpp
+)
 
 if(FASTMCPP_BUILD_TESTS)
   enable_testing()
