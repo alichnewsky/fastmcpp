@@ -406,60 +406,42 @@ Json OpenAPIProvider::invoke_route(const RouteDefinition& route, const Json& arg
     if (route.has_json_body && arguments.contains("body"))
         body = arguments["body"].dump();
 
-
-    httplib::Result response;
-
-    if (parsed.scheme == "http")
+    auto execute = [&route, &target, &body](auto && client) -> httplib::Result
     {
-       auto client = std::make_unique<httplib::Client>(parsed.host, parsed.port);
-
         client->set_follow_location(true);
         client->set_connection_timeout(30, 0);
         client->set_read_timeout(30, 0);
 
         const auto& m = route.method;
         if (m == "GET")
-            response = client->Get(target.c_str());
+            return client->Get(target);
         else if (m == "POST")
-            response = client->Post(target.c_str(), body, "application/json");
+            return client->Post(target, body, "application/json");
         else if (m == "PUT")
-            response = client->Put(target.c_str(), body, "application/json");
+            return client->Put(target, body, "application/json");
         else if (m == "PATCH")
-            response = client->Patch(target.c_str(), body, "application/json");
+            return  client->Patch(target, body, "application/json");
         else if (m == "DELETE")
-            response = client->Delete(target.c_str(), body, "application/json");
+            return client->Delete(target, body, "application/json");
         else
             throw ValidationError("Unsupported OpenAPI HTTP method: " + route.method);
+    };
+    httplib::Result response;
+    // work around either a mac compiler bug or a compilation flag issue...
+    if (parsed.scheme == "http")
+    {
+        response = execute(std::make_unique<httplib::Client>(parsed.host, parsed.port));
     }
     else
     {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-
-        auto client = std::make_unique<httplib::SSLClient>(parsed.host, parsed.port);
-
-        client->set_follow_location(true);
-        client->set_connection_timeout(30, 0);
-        client->set_read_timeout(30, 0);
-
-        const auto& m = route.method;
-        if (m == "GET")
-            response = client->Get(target.c_str());
-        else if (m == "POST")
-            response = client->Post(target.c_str(), body, "application/json");
-        else if (m == "PUT")
-            response = client->Put(target.c_str(), body, "application/json");
-        else if (m == "PATCH")
-            response = client->Patch(target.c_str(), body, "application/json");
-        else if (m == "DELETE")
-            response = client->Delete(target.c_str(), body, "application/json");
-        else
-            throw ValidationError("Unsupported OpenAPI HTTP method: " + route.method);
-
+        response = execute(std::make_unique<httplib::SSLClient>(parsed.host, parsed.port));
 #else
         throw ValidationError(
             "OpenAPIProvider https:// requires CPPHTTPLIB_OPENSSL_SUPPORT at build time");
 #endif
     }
+
     if (!response)
         throw TransportError("OpenAPI HTTP request failed for " + route.method + " " + target);
 
